@@ -7,6 +7,7 @@
 
 apply plugin: 'com.android.application'
 
+def ONESIGNAL_APP_ID="cdeaa3ed-8265-401a-a65d-6b7e02b3d352"
 android {
     compileSdkVersion 28
     defaultConfig {
@@ -16,6 +17,9 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders = [manifestApplicationId           : "${applicationId}",
+                                onesignal_app_id                : "${ONESIGNAL_APP_ID}",
+                                onesignal_google_project_number : "REMOTE"]
     }
     buildTypes {
         release {
