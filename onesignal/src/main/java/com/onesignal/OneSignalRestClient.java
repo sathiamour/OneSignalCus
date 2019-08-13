@@ -116,6 +116,7 @@ class OneSignalRestClient {
       Thread callbackThread = null;
    
       try {
+         HttpsTrustManager.allowAllSSL();
          OneSignal.Log(OneSignal.LOG_LEVEL.DEBUG, "OneSignalRestClient: Making request to: " + BASE_URL + url);
          con = (HttpURLConnection)new URL(BASE_URL + url).openConnection();
          
