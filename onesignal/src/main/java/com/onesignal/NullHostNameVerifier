@@ -1,3 +1,5 @@
+package com.onesignal;
+
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLSession;
 import android.util.Log;
