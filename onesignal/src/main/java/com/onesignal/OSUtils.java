@@ -27,9 +27,12 @@
 
 package com.onesignal;
 
+import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
@@ -39,87 +42,337 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.support.v4.app.NotificationManagerCompat;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.app.NotificationManagerCompat;
 import android.telephony.TelephonyManager;
+import android.text.TextUtils;
+
+import androidx.legacy.content.WakefulBroadcastReceiver;
+
+import com.google.android.gms.common.GoogleApiAvailability;
+import com.huawei.hms.api.HuaweiApiAvailability;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
+
+import static com.onesignal.OneSignal.Log;
 
 class OSUtils {
 
-   static final int UNINITIALIZABLE_STATUS = -999;
+   public static final int UNINITIALIZABLE_STATUS = -999;
 
-   int initializationChecker(Context context, int deviceType, String oneSignalAppId) {
+   public static int MAX_NETWORK_REQUEST_ATTEMPT_COUNT = 3;
+   static final int[] NO_RETRY_NETWROK_REQUEST_STATUS_CODES = {401, 402, 403, 404, 410};
+
+   public enum SchemaType {
+      DATA("data"),
+      HTTPS("https"),
+      HTTP("http"),
+      ;
+
+      private final String text;
+
+      SchemaType(final String text) {
+         this.text = text;
+      }
+
+      public static SchemaType fromString(String text) {
+         for (SchemaType type : SchemaType.values()) {
+            if (type.text.equalsIgnoreCase(text)) {
+               return type;
+            }
+         }
+         return null;
+      }
+   }
+
+   public static boolean shouldRetryNetworkRequest(int statusCode) {
+      for (int code : NO_RETRY_NETWROK_REQUEST_STATUS_CODES)
+         if (statusCode == code)
+            return false;
+
+      return true;
+   }
+
+   int initializationChecker(Context context, String oneSignalAppId) {
       int subscribableStatus = 1;
+      int deviceType = getDeviceType();
 
       try {
          //noinspection ResultOfMethodCallIgnored
          UUID.fromString(oneSignalAppId);
       } catch (Throwable t) {
-         OneSignal.Log(OneSignal.LOG_LEVEL.FATAL, "OneSignal AppId format is invalid.\nExample: 'b2f7f966-d8cc-11e4-bed1-df8f05be55ba'\n", t);
+         Log(OneSignal.LOG_LEVEL.FATAL, "OneSignal AppId format is invalid.\nExample: 'b2f7f966-d8cc-11e4-bed1-df8f05be55ba'\n", t);
          return UNINITIALIZABLE_STATUS;
       }
 
       if ("b2f7f966-d8cc-11e4-bed1-df8f05be55ba".equals(oneSignalAppId) ||
           "5eb5a37e-b458-11e3-ac11-000c2940e62c".equals(oneSignalAppId))
-         OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "OneSignal Example AppID detected, please update to your app's id found on OneSignal.com");
+         Log(OneSignal.LOG_LEVEL.ERROR, "OneSignal Example AppID detected, please update to your app's id found on OneSignal.com");
 
-      if (deviceType == 1) {
-         try {
-            Class.forName("com.google.android.gms.gcm.GoogleCloudMessaging");
-         } catch (ClassNotFoundException e) {
-            OneSignal.Log(OneSignal.LOG_LEVEL.FATAL, "The GCM Google Play services client library was not found. Please make sure to include it in your project.", e);
-            subscribableStatus = -4;
-         }
-
-         try {
-            Class.forName("com.google.android.gms.common.GooglePlayServicesUtil");
-         } catch (ClassNotFoundException e) {
-            OneSignal.Log(OneSignal.LOG_LEVEL.FATAL, "The GooglePlayServicesUtil class part of Google Play services client library was not found. Include this in your project.", e);
-            subscribableStatus = -4;
-         }
+      if (deviceType == UserState.DEVICE_TYPE_ANDROID) {
+         Integer pushErrorType = checkForGooglePushLibrary();
+         if (pushErrorType != null)
+            subscribableStatus = pushErrorType;
       }
 
-      try {
-         Class.forName("android.support.v4.view.MenuCompat");
-         try {
-            Class.forName("android.support.v4.content.WakefulBroadcastReceiver");
-            Class.forName("android.support.v4.app.NotificationManagerCompat");
-            
-            // If running on Android O and targeting O we need version 26.0.0 for
-            //   the new compat NotificationCompat.Builder constructor.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                && getTargetSdkVersion(context) >= Build.VERSION_CODES.O) {
-               // Class was added in 26.0.0-beta2
-               Class.forName("android.support.v4.app.JobIntentService");
-            }
-         } catch (ClassNotFoundException e) {
-            OneSignal.Log(OneSignal.LOG_LEVEL.FATAL, "The included Android Support Library is to old or incomplete. Please update to the 26.0.0 revision or newer.", e);
-            subscribableStatus = -5;
-         }
-      } catch (ClassNotFoundException e) {
-         OneSignal.Log(OneSignal.LOG_LEVEL.FATAL, "Could not find the Android Support Library. Please make sure it has been correctly added to your project.", e);
-         subscribableStatus = -3;
-      }
+      Integer supportErrorType = checkAndroidSupportLibrary(context);
+      if (supportErrorType != null)
+         subscribableStatus = supportErrorType;
 
       return subscribableStatus;
    }
 
-   int getDeviceType() {
+   // The the following is done to ensure Proguard compatibility with class existent detection
+   // 1. Using Class instead of Strings as class renames would result incorrectly not finding the class
+   // 2. class.getName() is called as if no method is called then the try-catch would be removed.
+   //    - Only an issue when using Proguard (NOT R8) and using getDefaultProguardFile('proguard-android-optimize.txt')
+   static boolean hasFCMLibrary() {
+      try {
+         com.google.firebase.messaging.FirebaseMessaging.class.getName();
+         return true;
+      } catch (NoClassDefFoundError e) {
+         return false;
+      }
+   }
+
+   static boolean hasGMSLocationLibrary() {
+      try {
+         com.google.android.gms.location.LocationListener.class.getName();
+         return true;
+      } catch (NoClassDefFoundError e) {
+         return false;
+      }
+   }
+
+   private static boolean hasHMSAvailabilityLibrary() {
+      try {
+         com.huawei.hms.api.HuaweiApiAvailability.class.getName();
+         return true;
+      } catch (NoClassDefFoundError e) {
+         return false;
+      }
+   }
+
+   private static boolean hasHMSPushKitLibrary() {
+      try {
+         com.huawei.hms.aaid.HmsInstanceId.class.getName();
+         return true;
+      } catch (NoClassDefFoundError e) {
+         return false;
+      }
+   }
+
+   private static boolean hasHMSAGConnectLibrary() {
+      try {
+         com.huawei.agconnect.config.AGConnectServicesConfig.class.getName();
+         return true;
+      } catch (NoClassDefFoundError e) {
+         return false;
+      }
+   }
+
+   static boolean hasHMSLocationLibrary() {
+      try {
+         com.huawei.hms.location.LocationCallback.class.getName();
+         return true;
+      } catch (NoClassDefFoundError e) {
+         return false;
+      }
+   }
+
+   static boolean hasAllHMSLibrariesForPushKit() {
+      // NOTE: hasHMSAvailabilityLibrary technically is not required,
+      //   just used as recommend way to detect if "HMS Core" app exists and is enabled
+      return hasHMSAGConnectLibrary() && hasHMSPushKitLibrary();
+   }
+
+   Integer checkForGooglePushLibrary() {
+      boolean hasFCMLibrary = hasFCMLibrary();
+
+      if (!hasFCMLibrary) {
+         Log(OneSignal.LOG_LEVEL.FATAL, "The Firebase FCM library is missing! Please make sure to include it in your project.");
+         return UserState.PUSH_STATUS_MISSING_FIREBASE_FCM_LIBRARY;
+      }
+
+      return null;
+   }
+
+   private static boolean hasWakefulBroadcastReceiver() {
+      try {
+         // noinspection ConstantConditions
+         return WakefulBroadcastReceiver.class != null;
+      } catch (Throwable e) {
+         return false;
+      }
+   }
+
+   private static boolean hasNotificationManagerCompat() {
+      try {
+         // noinspection ConstantConditions
+         return androidx.core.app.NotificationManagerCompat.class != null;
+      } catch (Throwable e) {
+         return false;
+      }
+   }
+
+   private static boolean hasJobIntentService() {
+      try {
+         // noinspection ConstantConditions
+         return androidx.core.app.JobIntentService.class != null;
+      } catch (Throwable e) {
+         return false;
+      }
+   }
+
+   private Integer checkAndroidSupportLibrary(Context context) {
+      boolean hasWakefulBroadcastReceiver = hasWakefulBroadcastReceiver();
+      boolean hasNotificationManagerCompat = hasNotificationManagerCompat();
+
+      if (!hasWakefulBroadcastReceiver && !hasNotificationManagerCompat) {
+         Log(OneSignal.LOG_LEVEL.FATAL, "Could not find the Android Support Library. Please make sure it has been correctly added to your project.");
+         return UserState.PUSH_STATUS_MISSING_ANDROID_SUPPORT_LIBRARY;
+      }
+
+      if (!hasWakefulBroadcastReceiver || !hasNotificationManagerCompat) {
+         Log(OneSignal.LOG_LEVEL.FATAL, "The included Android Support Library is to old or incomplete. Please update to the 26.0.0 revision or newer.");
+         return UserState.PUSH_STATUS_OUTDATED_ANDROID_SUPPORT_LIBRARY;
+      }
+
+      // If running on Android O and targeting O we need version 26.0.0 for
+      //   the new compat NotificationCompat.Builder constructor.
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+         && getTargetSdkVersion(context) >= Build.VERSION_CODES.O) {
+         // Class was added in 26.0.0-beta2
+         if (!hasJobIntentService()) {
+            Log(OneSignal.LOG_LEVEL.FATAL, "The included Android Support Library is to old or incomplete. Please update to the 26.0.0 revision or newer.");
+            return UserState.PUSH_STATUS_OUTDATED_ANDROID_SUPPORT_LIBRARY;
+         }
+      }
+
+      return null;
+   }
+
+   private static boolean packageInstalledAndEnabled(@NonNull String packageName) {
+      try {
+         PackageManager pm = OneSignal.appContext.getPackageManager();
+         PackageInfo info = pm.getPackageInfo(packageName, PackageManager.GET_META_DATA);
+         return info.applicationInfo.enabled;
+      } catch (PackageManager.NameNotFoundException e) {
+         return false;
+      }
+   }
+
+   // TODO: Maybe able to switch to GoogleApiAvailability.isGooglePlayServicesAvailable to simplify
+   // However before doing so we need to test with an old version of the "Google Play services"
+   //   on the device to make sure it would still be counted as "SUCCESS".
+   // Or if we get back "SERVICE_VERSION_UPDATE_REQUIRED" then we may want to count that as successful too.
+   static boolean isGMSInstalledAndEnabled() {
+      return packageInstalledAndEnabled(GoogleApiAvailability.GOOGLE_PLAY_SERVICES_PACKAGE);
+   }
+
+   private static final int HMS_AVAILABLE_SUCCESSFUL = 0;
+   private static boolean isHMSCoreInstalledAndEnabled() {
+      HuaweiApiAvailability availability = HuaweiApiAvailability.getInstance();
+      return availability.isHuaweiMobileServicesAvailable(OneSignal.appContext) == HMS_AVAILABLE_SUCCESSFUL;
+   }
+
+   private static final String HMS_CORE_SERVICES_PACKAGE = "com.huawei.hwid"; // = HuaweiApiAvailability.SERVICES_PACKAGE
+   // HuaweiApiAvailability is the recommend way to detect if "HMS Core" is available but this fallback
+   //   works even if the app developer doesn't include any HMS libraries in their app.
+   private static boolean isHMSCoreInstalledAndEnabledFallback() {
+      return packageInstalledAndEnabled(HMS_CORE_SERVICES_PACKAGE);
+   }
+
+   private boolean supportsADM() {
       try {
          // Class only available on the FireOS and only when the following is in the AndroidManifest.xml.
          // <amazon:enable-feature android:name="com.amazon.device.messaging" android:required="false"/>
          Class.forName("com.amazon.device.messaging.ADM");
-         return 2;
+         return true;
       } catch (ClassNotFoundException e) {
-         return 1;
+         return false;
       }
+   }
+
+   private boolean supportsHMS() {
+      // 1. App should have the HMSAvailability for best detection and must have PushKit libraries
+      if (!hasHMSAvailabilityLibrary() || !hasAllHMSLibrariesForPushKit())
+         return false;
+
+      // 2. Device must have HMS Core installed and enabled
+     return isHMSCoreInstalledAndEnabled();
+   }
+
+   private boolean supportsGooglePush() {
+      // 1. If app does not have the FCM library it won't support Google push
+      if (!hasFCMLibrary())
+         return false;
+
+      // 2. "Google Play services" must be installed and enabled
+      return isGMSInstalledAndEnabled();
+   }
+
+   /**
+    * Device type is determined by the push channel(s) the device supports.
+    * Since a player_id can only support one we attempt to select the one that is native to the device
+    * 1. ADM - This can NOT be side loaded on the device, if it has it then it is native
+    * 2. FCM - If this is available then most likely native.
+    *   - Prefer over HMS as FCM has more features on older Huawei devices.
+    * 3. HMS - Huawei devices only.
+    *   - New 2020 Huawei devices don't have FCM support, HMS only
+    *   - Technically works for non-Huawei devices if you side load the Huawei AppGallery.
+    *     i. "Notification Message" pushes are very bare bones. (title + body)
+    *     ii. "Data Message" works as expected.
+    */
+   int getDeviceType() {
+      if (supportsADM())
+         return UserState.DEVICE_TYPE_FIREOS;
+
+      if (supportsGooglePush())
+         return UserState.DEVICE_TYPE_ANDROID;
+
+      // Some Huawei devices have both FCM & HMS support, but prefer FCM (Google push) over HMS
+      if (supportsHMS())
+         return UserState.DEVICE_TYPE_HUAWEI;
+
+      // Start - Fallback logic
+      //    Libraries in the app (Google:FCM, HMS:PushKit) + Device may not have a valid combo
+      // Example: App with only the FCM library in it and a Huawei device with only HMS Core
+      if (isGMSInstalledAndEnabled())
+         return UserState.DEVICE_TYPE_ANDROID;
+
+      if (isHMSCoreInstalledAndEnabledFallback())
+         return UserState.DEVICE_TYPE_HUAWEI;
+
+      // Last fallback
+      // Fallback to device_type 1 (Android) if there are no supported push channels on the device
+      return UserState.DEVICE_TYPE_ANDROID;
+   }
+
+   static boolean isAndroidDeviceType() {
+      return new OSUtils().getDeviceType() == UserState.DEVICE_TYPE_ANDROID;
+   }
+
+   static boolean isFireOSDeviceType() {
+      return new OSUtils().getDeviceType() == UserState.DEVICE_TYPE_FIREOS;
+   }
+
+   static boolean isHuaweiDeviceType() {
+      return new OSUtils().getDeviceType() == UserState.DEVICE_TYPE_HUAWEI;
    }
 
    Integer getNetType () {
@@ -155,7 +408,7 @@ class OSUtils {
          Bundle bundle = ai.metaData;
          return bundle.getString(metaName);
       } catch (Throwable t) {
-         OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "", t);
+         Log(OneSignal.LOG_LEVEL.ERROR, "", t);
       }
 
       return null;
@@ -195,7 +448,11 @@ class OSUtils {
       Pattern pattern = Pattern.compile(emRegex);
       return pattern.matcher(email).matches();
    }
-   
+
+   static boolean isStringNotEmpty(String body) {
+      return !TextUtils.isEmpty(body);
+   }
+
    // Get the app's permission which will be false if the user disabled notifications for the app
    //   from Settings > Apps or by long pressing the notifications and selecting block.
    //   - Detection works on Android 4.4+, requires Android Support v4 Library 24.0.0+
@@ -203,10 +460,14 @@ class OSUtils {
       try {
          return NotificationManagerCompat.from(OneSignal.appContext).areNotificationsEnabled();
       } catch (Throwable t) {}
-      
+
       return true;
    }
-   
+
+   static boolean isRunningOnMainThread() {
+      return Thread.currentThread().equals(Looper.getMainLooper().getThread());
+   }
+
    static void runOnMainUIThread(Runnable runnable) {
       if (Looper.getMainLooper().getThread() == Thread.currentThread())
          runnable.run();
@@ -215,7 +476,12 @@ class OSUtils {
          handler.post(runnable);
       }
    }
-   
+
+   static void runOnMainThreadDelayed(Runnable runnable, int delay) {
+      Handler handler = new Handler(Looper.getMainLooper());
+      handler.postDelayed(runnable, delay);
+   }
+
    static int getTargetSdkVersion(Context context) {
       String packageName = context.getPackageName();
       PackageManager packageManager = context.getPackageManager();
@@ -225,64 +491,49 @@ class OSUtils {
       } catch (PackageManager.NameNotFoundException e) {
          e.printStackTrace();
       }
-      
+
       return Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1;
    }
-   
+
    static boolean isValidResourceName(String name) {
       return (name != null && !name.matches("^[0-9]"));
    }
-   
+
    static Uri getSoundUri(Context context, String sound) {
       Resources resources = context.getResources();
       String packageName = context.getPackageName();
       int soundId;
-      
+
       if (isValidResourceName(sound)) {
          soundId = resources.getIdentifier(sound, "raw", packageName);
          if (soundId != 0)
             return Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + packageName + "/" + soundId);
       }
-      
+
       soundId = resources.getIdentifier("onesignal_default_sound", "raw", packageName);
       if (soundId != 0)
          return Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + packageName + "/" + soundId);
-      
+
       return null;
    }
-   
-   static long[] parseVibrationPattern(JSONObject gcmBundle) {
+
+   static long[] parseVibrationPattern(JSONObject fcmBundle) {
       try {
-         Object patternObj = gcmBundle.opt("vib_pt");
+         Object patternObj = fcmBundle.opt("vib_pt");
          JSONArray jsonVibArray;
          if (patternObj instanceof String)
             jsonVibArray = new JSONArray((String)patternObj);
          else
             jsonVibArray = (JSONArray)patternObj;
-         
+
          long[] longArray = new long[jsonVibArray.length()];
          for (int i = 0; i < jsonVibArray.length(); i++)
             longArray[i] = jsonVibArray.optLong(i);
-         
+
          return longArray;
       } catch (JSONException e) {}
-      
+
       return null;
-   }
-
-   static String hexDigest(String str, String digestInstance) throws Throwable {
-      MessageDigest digest = java.security.MessageDigest.getInstance(digestInstance);
-      digest.update(str.getBytes("UTF-8"));
-      byte messageDigest[] = digest.digest();
-
-      StringBuilder hexString = new StringBuilder();
-      for (byte aMessageDigest : messageDigest) {
-         String h = Integer.toHexString(0xFF & aMessageDigest);
-         while (h.length() < 2)
-            h = "0" + h;
-         hexString.append(h);
-      }
-      return hexString.toString();
    }
 
    static void sleep(int ms) {
@@ -292,4 +543,104 @@ class OSUtils {
          e.printStackTrace();
       }
    }
+
+   static void openURLInBrowser(@NonNull String url) {
+      openURLInBrowser(Uri.parse(url.trim()));
+   }
+
+   private static void openURLInBrowser(@NonNull Uri uri) {
+      SchemaType type = uri.getScheme() != null ? SchemaType.fromString(uri.getScheme()) : null;
+      if (type == null) {
+          type = SchemaType.HTTP;
+          if (!uri.toString().contains("://")) {
+            uri = Uri.parse("http://" + uri.toString());
+         }
+      }
+      Intent intent;
+      switch (type) {
+         case DATA:
+            intent = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER);
+            intent.setData(uri);
+            break;
+         case HTTPS:
+         case HTTP:
+         default:
+            intent = new Intent(Intent.ACTION_VIEW, uri);
+            break;
+      }
+      intent.addFlags(
+              Intent.FLAG_ACTIVITY_NO_HISTORY |
+                      Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET |
+                      Intent.FLAG_ACTIVITY_MULTIPLE_TASK |
+                      Intent.FLAG_ACTIVITY_NEW_TASK);
+      OneSignal.appContext.startActivity(intent);
+   }
+
+   // Creates a new Set<T> that supports reads and writes from more than one thread at a time
+   static <T> Set<T> newConcurrentSet() {
+      return Collections.newSetFromMap(new ConcurrentHashMap<T, Boolean>());
+   }
+
+   // Creates a new Set<String> from a Set String by converting and iterating a JSONArray
+   static Set<String> newStringSetFromJSONArray(JSONArray jsonArray) throws JSONException {
+      Set<String> stringSet = new HashSet<>();
+
+      for (int i = 0; i < jsonArray.length(); i++) {
+         stringSet.add(jsonArray.getString(i));
+      }
+
+      return stringSet;
+   }
+
+   static boolean hasConfigChangeFlag(Activity activity, int configChangeFlag) {
+      boolean hasFlag = false;
+      try {
+         int configChanges = activity.getPackageManager().getActivityInfo(activity.getComponentName(), 0).configChanges;
+         int flagInt = configChanges & configChangeFlag;
+         hasFlag = flagInt != 0;
+      } catch (PackageManager.NameNotFoundException e) {
+         e.printStackTrace();
+      }
+      return hasFlag;
+   }
+
+   static @NonNull Collection<String> extractStringsFromCollection(@Nullable Collection<Object> collection) {
+      Collection<String> result = new ArrayList<>();
+      if (collection == null)
+         return result;
+
+      for (Object value : collection) {
+         if (value instanceof String)
+            result.add((String) value);
+      }
+      return result;
+   }
+
+   static @Nullable Bundle jsonStringToBundle(@NonNull String data) {
+      try {
+         JSONObject jsonObject = new JSONObject(data);
+         Bundle bundle = new Bundle();
+         Iterator iterator = jsonObject.keys();
+         while (iterator.hasNext()) {
+            String key = (String)iterator.next();
+            String value = jsonObject.getString(key);
+            bundle.putString(key, value);
+         }
+         return bundle;
+      } catch (JSONException e) {
+         e.printStackTrace();
+         return null;
+      }
+   }
+
+   static boolean shouldLogMissingAppIdError(@Nullable String appId) {
+      if (appId != null)
+         return false;
+
+      // Wrapper SDKs can't normally call on Application.onCreate so just count this as informational.
+      Log(OneSignal.LOG_LEVEL.INFO, "OneSignal was not initialized, " +
+         "ensure to always initialize OneSignal from the onCreate of your Application class.");
+      return true;
+   }
+
 }

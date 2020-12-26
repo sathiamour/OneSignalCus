@@ -34,8 +34,10 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Build;
-import android.support.annotation.RequiresApi;
-import android.support.v4.app.NotificationManagerCompat;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
+import androidx.core.app.NotificationManagerCompat;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -45,6 +47,8 @@ import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 class NotificationChannelManager {
    
@@ -54,18 +58,18 @@ class NotificationChannelManager {
 
    private static final String DEFAULT_CHANNEL_ID = "fcm_fallback_notification_channel";
    private static final String RESTORE_CHANNEL_ID = "restored_OS_notifications";
+   private static final Pattern hexPattern = Pattern.compile("^([A-Fa-f0-9]{8})$");
    
-   static String createNotificationChannel(NotificationGenerationJob notifJob) {
+   static String createNotificationChannel(OSNotificationGenerationJob notificationJob) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
          return DEFAULT_CHANNEL_ID;
 
-      Context context = notifJob.context;
-      JSONObject jsonPayload = notifJob.jsonPayload;
+      Context context = notificationJob.getContext();
+      JSONObject jsonPayload = notificationJob.getJsonPayload();
 
-      NotificationManager notificationManager =
-            (NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+      NotificationManager notificationManager = OneSignalNotificationManager.getNotificationManager(context);
 
-      if (notifJob.restoring)
+      if (notificationJob.isRestoring())
          return createRestoreChannel(notificationManager);
       
       // Allow channels created outside the SDK
@@ -128,8 +132,21 @@ class NotificationChannelManager {
       }
 
       if (payload.has("ledc")) {
-         BigInteger ledColor = new BigInteger(payload.optString("ledc"), 16);
-         channel.setLightColor(ledColor.intValue());
+         String ledc = payload.optString("ledc");
+         Matcher matcher = hexPattern.matcher(ledc);
+         BigInteger ledColor;
+
+         if (!matcher.matches()) {
+            OneSignal.Log(OneSignal.LOG_LEVEL.WARN, "OneSignal LED Color Settings: ARGB Hex value incorrect format (E.g: FF9900FF)");
+            ledc = "FFFFFFFF";
+         }
+
+         try {
+            ledColor = new BigInteger(ledc, 16);
+            channel.setLightColor(ledColor.intValue());
+         } catch (Throwable t) {
+            OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Couldn't convert ARGB Hex value to BigInteger:", t);
+         }
       }
       channel.enableLights(payload.optInt("led", 1) == 1);
 
@@ -157,7 +174,17 @@ class NotificationChannelManager {
       channel.setShowBadge(payload.optInt("bdg", 1) == 1);
       channel.setBypassDnd(payload.optInt("bdnd", 0) == 1);
 
-      notificationManager.createNotificationChannel(channel);
+      OneSignal.onesignalLog(OneSignal.LOG_LEVEL.VERBOSE, "Creating notification channel with channel:\n" + channel.toString());
+      try {
+         notificationManager.createNotificationChannel(channel);
+      } catch (IllegalArgumentException e) {
+         // TODO: Remove this try-catch once it is figured out which argument is causing Issue #895
+         //    try-catch added to prevent crashing from the illegal argument
+         //    Added logging above this try-catch so we can evaluate the payload of the next victim
+         //    to report a stacktrace
+         //    https://github.com/OneSignal/OneSignal-Android-SDK/issues/895
+         e.printStackTrace();
+      }
       return channel_id;
    }
    
@@ -185,22 +212,20 @@ class NotificationChannelManager {
       return RESTORE_CHANNEL_ID;
    }
    
-   static void processChannelList(Context context, JSONObject payload) {
+   static void processChannelList(@NonNull Context context, @Nullable JSONArray list) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
          return;
 
-      if (!payload.has("chnl_lst"))
+      if (list == null)
          return;
 
-      NotificationManager notificationManager =
-         (NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+      NotificationManager notificationManager = OneSignalNotificationManager.getNotificationManager(context);
       
-      Set<String> sycnedChannelSet = new HashSet<>();
-      JSONArray chnlList = payload.optJSONArray("chnl_lst");
-      int jsonArraySize = chnlList.length();
+      Set<String> syncedChannelSet = new HashSet<>();
+      int jsonArraySize = list.length();
       for (int i = 0; i < jsonArraySize; i++) {
          try {
-            sycnedChannelSet.add(createChannel(context, notificationManager, chnlList.getJSONObject(i)));
+            syncedChannelSet.add(createChannel(context, notificationManager, list.getJSONObject(i)));
          } catch (JSONException e) {
             OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Could not create notification channel due to JSON payload error!", e);
          }
@@ -211,7 +236,7 @@ class NotificationChannelManager {
       List<NotificationChannel> existingChannels = notificationManager.getNotificationChannels();
       for(NotificationChannel existingChannel : existingChannels) {
          String id = existingChannel.getId();
-         if (id.startsWith("OS_") && !sycnedChannelSet.contains(id))
+         if (id.startsWith("OS_") && !syncedChannelSet.contains(id))
             notificationManager.deleteNotificationChannel(id);
       }
    }

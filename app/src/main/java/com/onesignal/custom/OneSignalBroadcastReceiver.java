@@ -11,24 +11,24 @@ import android.content.Context;
 import android.text.TextUtils;
 import android.util.Log;
 
-import com.onesignal.OSNotification;
+import com.onesignal.OSNotificationReceivedEvent;
 import com.onesignal.OneSignal;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 
-public class OneSignalBroadcastReceiver implements OneSignal.NotificationReceivedHandler {
+public class OneSignalBroadcastReceiver implements OneSignal.OSRemoteNotificationReceivedHandler {
     private final String TAG="ONESIGNAL NOTIFICATION";
 
     @Override
-    public void notificationReceived(Context context, OSNotification osNotification) {
+    public void remoteNotificationReceived(Context context, OSNotificationReceivedEvent osNotification) {
         Log.i(TAG,"OneSignal notificationReceived!!!!!! : " + osNotification.toJSONObject());
         try {
             JSONObject customJSON = osNotification.toJSONObject();
             Log.i(TAG,"Oriens - OneSignal Receiver customJSON additionalData: " + customJSON);
 
-            if (customJSON.has("payload")) {
-                String strPayload = JsonDataParser.getStringValueFromJSON(customJSON, "payload");
+            if (customJSON.has("notification")) {
+                String strPayload = JsonDataParser.getStringValueFromJSON(customJSON, "notification");
                 if (!TextUtils.isEmpty(strPayload))
                     customJSON = JsonDataParser.getJsonObject(strPayload);
 
@@ -45,6 +45,8 @@ public class OneSignalBroadcastReceiver implements OneSignal.NotificationReceive
                             String data = JsonDataParser.getStringValueFromJSON(additionalData, "data");
                             Log.i(TAG,"Data : "+data);
                             parseMessaging(context, JsonDataParser.getJsonObject(data));
+                            String id=osNotification.getNotification().getNotificationId();
+//                            OneSignal.removeNotification(id);
                         }
 
 //                    }

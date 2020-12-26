@@ -27,31 +27,31 @@
 
 package com.onesignal;
 
-import android.support.annotation.NonNull;
+import androidx.annotation.NonNull;
 
 import org.json.JSONObject;
 
 public class OSEmailSubscriptionState implements Cloneable {
 
-    OSObservable<Object, OSEmailSubscriptionState> observable;
+    private static final String CHANGED_KEY = "changed";
+
+    private OSObservable<Object, OSEmailSubscriptionState> observable;
+    private String emailUserId;
+    private String emailAddress;
 
     OSEmailSubscriptionState(boolean asFrom) {
-        observable = new OSObservable<>("changed", false);
+        observable = new OSObservable<>(CHANGED_KEY, false);
 
         if (asFrom) {
             emailUserId = OneSignalPrefs.getString(OneSignalPrefs.PREFS_ONESIGNAL,
                     OneSignalPrefs.PREFS_ONESIGNAL_EMAIL_ID_LAST, null);
             emailAddress = OneSignalPrefs.getString(OneSignalPrefs.PREFS_ONESIGNAL,
                     OneSignalPrefs.PREFS_ONESIGNAL_EMAIL_ADDRESS_LAST, null);
-        }
-        else {
+        } else {
             emailUserId = OneSignal.getEmailId();
             emailAddress = OneSignalStateSynchronizer.getEmailStateSynchronizer().getRegistrationId();
         }
     }
-
-    private String emailUserId;
-    private String emailAddress;
 
     void clearEmailAndId() {
         boolean changed = emailUserId != null || emailAddress != null;
@@ -62,7 +62,12 @@ public class OSEmailSubscriptionState implements Cloneable {
     }
 
     void setEmailUserId(@NonNull String id) {
-        boolean changed = !id.equals(emailUserId);
+        boolean changed = false;
+        if (id == null)
+            changed = emailUserId != null;
+        else if (!id.equals(emailUserId))
+            changed = true;
+
         emailUserId = id;
         if (changed)
             observable.notifyChange(this);
@@ -83,7 +88,7 @@ public class OSEmailSubscriptionState implements Cloneable {
         return emailAddress;
     }
 
-    public boolean getSubscribed() {
+    public boolean isSubscribed() {
         return emailUserId != null && emailAddress != null;
     }
 
@@ -97,6 +102,10 @@ public class OSEmailSubscriptionState implements Cloneable {
     boolean compare(OSEmailSubscriptionState from) {
         return    !(emailUserId != null ? emailUserId : "").equals(from.emailUserId != null ? from.emailUserId : "")
                || !(emailAddress != null ? emailAddress : "").equals(from.emailAddress != null ? from.emailAddress : "");
+    }
+
+    public OSObservable<Object, OSEmailSubscriptionState> getObservable() {
+        return observable;
     }
 
     protected Object clone() {
@@ -120,7 +129,7 @@ public class OSEmailSubscriptionState implements Cloneable {
             else
                 mainObj.put("emailAddress", JSONObject.NULL);
 
-            mainObj.put("subscribed", getSubscribed());
+            mainObj.put("isSubscribed", isSubscribed());
         }
         catch(Throwable t) {
             t.printStackTrace();

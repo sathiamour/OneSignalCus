@@ -30,13 +30,20 @@ package com.onesignal;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.util.Log;
+import android.os.Build;
 
 public class UpgradeReceiver extends BroadcastReceiver {
 
    @Override
    public void onReceive(Context context, Intent intent) {
-      Log.i("++++++Test+++++++","********************Test Receiver********************************");
-      NotificationRestorer.startDelayedRestoreTaskFromReceiver(context);
+
+      // TODO: Now that we arent restoring like we use to, think we can remove this? Ill do some
+      //  testing and look at the issue but maybe someone has a answer or rems what directly
+      //  was causing this issue
+      // Return early if using Android 7.0 due to upgrade restore crash (#263)
+      if (Build.VERSION.SDK_INT == Build.VERSION_CODES.N)
+         return;
+
+      OSNotificationRestoreWorkManager.beginEnqueueingWork(context, true);
    }
 }

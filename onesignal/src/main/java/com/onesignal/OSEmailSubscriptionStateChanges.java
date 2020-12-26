@@ -27,10 +27,16 @@
 
 package com.onesignal;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 
 public class OSEmailSubscriptionStateChanges {
-    OSEmailSubscriptionState to, from;
+    private OSEmailSubscriptionState from, to;
+
+    public OSEmailSubscriptionStateChanges(OSEmailSubscriptionState from, OSEmailSubscriptionState to) {
+        this.from = from;
+        this.to = to;
+    }
 
     public OSEmailSubscriptionState getTo() {
         return to;
@@ -46,9 +52,8 @@ public class OSEmailSubscriptionStateChanges {
         try {
             mainObj.put("from", from.toJSONObject());
             mainObj.put("to", to.toJSONObject());
-        }
-        catch(Throwable t) {
-            t.printStackTrace();
+        } catch (JSONException e) {
+            e.printStackTrace();
         }
 
         return mainObj;

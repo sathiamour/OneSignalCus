@@ -23,6 +23,10 @@
     void changed(com.onesignal.OSSubscriptionState);
 }
 
+-keep class com.onesignal.OSEmailSubscriptionChangedInternalObserver {
+    void changed(com.onesignal.OSEmailSubscriptionState);
+}
+
 -keep class ** implements com.onesignal.OSPermissionObserver {
     void onOSPermissionChanged(com.onesignal.OSPermissionStateChanges);
 }
@@ -31,9 +35,13 @@
     void onOSSubscriptionChanged(com.onesignal.OSSubscriptionStateChanges);
 }
 
+-keep class ** implements com.onesignal.OSEmailSubscriptionObserver {
+    void onOSEmailSubscriptionChanged(com.onesignal.OSEmailSubscriptionStateChanges);
+}
+
 -keep class com.onesignal.shortcutbadger.impl.AdwHomeBadger { <init>(...); }
 -keep class com.onesignal.shortcutbadger.impl.ApexHomeBadger { <init>(...); }
--keep class com.onesignal.shortcutbadger.impl.AsusHomeLauncher { <init>(...); }
+-keep class com.onesignal.shortcutbadger.impl.AsusHomeBadger { <init>(...); }
 -keep class com.onesignal.shortcutbadger.impl.DefaultBadger { <init>(...); }
 -keep class com.onesignal.shortcutbadger.impl.EverythingMeHomeBadger { <init>(...); }
 -keep class com.onesignal.shortcutbadger.impl.HuaweiHomeBadger { <init>(...); }
@@ -50,8 +58,19 @@
 
 -dontwarn com.amazon.**
 
+-dontwarn com.huawei.**
+
 # Proguard ends up removing this class even if it is used in AndroidManifest.xml so force keeping it.
 -keep public class com.onesignal.ADMMessageHandler {*;}
+
+-keep public class com.onesignal.ADMMessageHandlerJob {*;}
+
+# OSRemoteNotificationReceivedHandler is an interface designed to be extend then referenced in the
+#    app's AndroidManifest.xml as a meta-data tag.
+# This doesn't count as a hard reference so this entry is required.
+-keep class ** implements com.onesignal.OneSignal$OSRemoteNotificationReceivedHandler {
+   void remoteNotificationReceived(android.content.Context, com.onesignal.OSNotificationReceivedEvent);
+}
 
 -keep class com.onesignal.JobIntentService$* {*;}
 

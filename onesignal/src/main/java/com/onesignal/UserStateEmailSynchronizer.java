@@ -1,13 +1,29 @@
 package com.onesignal;
 
+import androidx.annotation.Nullable;
+
+import com.onesignal.OneSignalStateSynchronizer.UserStateSynchronizerType;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
+
 class UserStateEmailSynchronizer extends UserStateSynchronizer {
+
+    UserStateEmailSynchronizer() {
+        super(UserStateSynchronizerType.EMAIL);
+    }
 
     @Override
     protected UserState newUserState(String inPersistKey, boolean load) {
         return new UserStateEmail(inPersistKey, load);
+    }
+
+    @Override
+    protected OneSignal.LOG_LEVEL getLogLevel() {
+        return OneSignal.LOG_LEVEL.INFO;
     }
 
     // Email subscription not readable from SDK
@@ -19,6 +35,13 @@ class UserStateEmailSynchronizer extends UserStateSynchronizer {
     // Email tags not readable from SDK
     @Override
     GetTagsResult getTags(boolean fromServer) {
+        return null;
+    }
+
+    // Email external id not readable from SDK
+    @Override
+    @Nullable
+    String getExternalId(boolean fromServer) {
         return null;
     }
 
@@ -54,18 +77,20 @@ class UserStateEmailSynchronizer extends UserStateSynchronizer {
     }
 
     void setEmail(String email, String emailAuthHash) {
-        JSONObject syncValues = getUserStateForModification().syncValues;
+        UserState userState = getUserStateForModification();
+        ImmutableJSONObject syncValues = userState.getSyncValues();
 
         boolean noChange = email.equals(syncValues.optString("identifier")) &&
-                               syncValues.optString("email_auth_hash").equals(emailAuthHash == null ? "" : emailAuthHash);
+                syncValues.optString("email_auth_hash").equals(emailAuthHash == null ? "" : emailAuthHash);
         if (noChange) {
             OneSignal.fireEmailUpdateSuccess();
             return;
         }
 
         String existingEmail = syncValues.optString("identifier", null);
+
         if (existingEmail == null)
-            setSyncAsNewSession();
+            setNewSession();
 
         try {
             JSONObject emailJSON = new JSONObject();
@@ -78,11 +103,11 @@ class UserStateEmailSynchronizer extends UserStateSynchronizer {
                 if (existingEmail != null && !existingEmail.equals(email)) {
                     OneSignal.saveEmailId("");
                     resetCurrentState();
-                    setSyncAsNewSession();
+                    setNewSession();
                 }
             }
 
-            generateJsonDiff(syncValues, emailJSON, syncValues, null);
+            userState.generateJsonDiffFromIntoSyncValued(emailJSON, null);
             scheduleSyncToServer();
         }
         catch (JSONException e) {
@@ -103,7 +128,7 @@ class UserStateEmailSynchronizer extends UserStateSynchronizer {
     @Override
     protected void addOnSessionOrCreateExtras(JSONObject jsonBody) {
         try {
-            jsonBody.put("device_type", 11);
+            jsonBody.put("device_type", UserState.DEVICE_TYPE_EMAIL);
             jsonBody.putOpt("device_player_id", OneSignal.getUserId());
         } catch (JSONException e) {
             e.printStackTrace();
@@ -115,12 +140,15 @@ class UserStateEmailSynchronizer extends UserStateSynchronizer {
         OneSignal.saveEmailId("");
 
         resetCurrentState();
-        toSyncUserState.syncValues.remove("identifier");
-        toSyncUserState.syncValues.remove("email_auth_hash");
-        toSyncUserState.syncValues.remove("device_player_id");
-        toSyncUserState.persistState();
+        getToSyncUserState().removeFromSyncValues("identifier");
+        List<String> keysToRemove = new ArrayList<>();
+        keysToRemove.add("email_auth_hash");
+        keysToRemove.add("device_player_id");
+        keysToRemove.add("external_user_id");
+        getToSyncUserState().removeFromSyncValues(keysToRemove);
+        getToSyncUserState().persistState();
 
-        OneSignal.getPermissionSubscriptionState().emailSubscriptionStatus.clearEmailAndId();
+        OneSignal.getEmailSubscriptionState().clearEmailAndId();
     }
 
     @Override

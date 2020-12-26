@@ -31,10 +31,16 @@ import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
+import android.os.Build;
 import android.os.Bundle;
+import android.service.notification.StatusBarNotification;
+import androidx.annotation.RequiresApi;
 
+import com.onesignal.OneSignalDbContract.NotificationTable;
+import com.onesignal.shortcutbadger.ShortcutBadgeException;
 import com.onesignal.shortcutbadger.ShortcutBadger;
+
+import static com.onesignal.NotificationLimitManager.MAX_NUMBER_OF_NOTIFICATIONS_STR;
 
 class BadgeCountUpdater {
 
@@ -54,9 +60,9 @@ class BadgeCountUpdater {
          }
          else
             badgesEnabled = 1;
-      } catch (Throwable t) {
+      } catch (PackageManager.NameNotFoundException e) {
          badgesEnabled = 0;
-         OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Error reading meta-data tag 'com.onesignal.BadgeCount'. Disabling badge setting.", t);
+         OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Error reading meta-data tag 'com.onesignal.BadgeCount'. Disabling badge setting.", e);
       }
 
       return (badgesEnabled == 1);
@@ -66,34 +72,59 @@ class BadgeCountUpdater {
       return areBadgeSettingsEnabled(context) && OSUtils.areNotificationsEnabled(context);
    }
 
-   static void update(SQLiteDatabase readableDb, Context context) {
+   static void update(OneSignalDb db, Context context) {
       if (!areBadgesEnabled(context))
          return;
 
-      Cursor cursor = readableDb.query(
-          OneSignalDbContract.NotificationTable.TABLE_NAME,
-          null,
-          OneSignalDbContract.NotificationTable.COLUMN_NAME_DISMISSED + " = 0 AND " +  // Where String
-             OneSignalDbContract.NotificationTable.COLUMN_NAME_OPENED + " = 0 AND " +
-             OneSignalDbContract.NotificationTable.COLUMN_NAME_IS_SUMMARY + " = 0 ",
-          null,                                                    // Where args
-          null,                                                    // group by
-          null,                                                    // filter by row groups
-          null                                                     // sort order, new to old
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+         updateStandard(context);
+      else
+         updateFallback(db, context);
+   }
+
+   @RequiresApi(api = Build.VERSION_CODES.M)
+   private static void updateStandard(Context context) {
+      StatusBarNotification[] activeNotifs = OneSignalNotificationManager.getActiveNotifications(context);
+
+      int runningCount = 0;
+      for (StatusBarNotification activeNotif : activeNotifs) {
+         if (NotificationLimitManager.isGroupSummary(activeNotif))
+            continue;
+         runningCount++;
+      }
+
+      updateCount(runningCount, context);
+   }
+
+   private static void updateFallback(OneSignalDb db, Context context) {
+      Cursor cursor = db.query(
+         NotificationTable.TABLE_NAME,
+         null,
+         OneSignalDbHelper.recentUninteractedWithNotificationsWhere().toString(),
+         null,                                                    // Where args
+         null,                                                    // group by
+         null,                                                    // filter by row groups
+         null,                                                     // sort order, new to old
+         MAX_NUMBER_OF_NOTIFICATIONS_STR
       );
 
-      updateCount(cursor.getCount(), context);
+      int notificationCount = cursor.getCount();
       cursor.close();
+
+      updateCount(notificationCount, context);
    }
 
    static void updateCount(int count, Context context) {
       if (!areBadgeSettingsEnabled(context))
          return;
 
-      // Can throw if badges are not support on the device.
-      //  Or app does not have a default launch Activity.
       try {
          ShortcutBadger.applyCountOrThrow(context, count);
-      } catch(Throwable t) {}
+      } catch (ShortcutBadgeException e) {
+         // Suppress error as there are normal cases where this will throw
+         // Can throw if:
+         //    - Badges are not support on the device.
+         //    - App does not have a default launch Activity.
+      }
    }
 }

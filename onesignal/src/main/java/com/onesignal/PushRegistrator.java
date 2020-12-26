@@ -1,7 +1,7 @@
 /**
  * Modified MIT License
  * 
- * Copyright 2016 OneSignal
+ * Copyright 2018 OneSignal
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,5 +35,5 @@ public interface PushRegistrator {
       void complete(String id, int status);
    }
 
-   void registerForPush(Context context, String googleProjectNumber, RegisteredHandler callback);
+   void registerForPush(Context context, String senderId, RegisteredHandler callback);
 }
