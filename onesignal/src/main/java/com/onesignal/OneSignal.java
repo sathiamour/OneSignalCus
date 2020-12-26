@@ -2941,7 +2941,7 @@ public class OneSignal {
       return null;
    }
 
-   static boolean isAppActive() {
+   public static boolean isAppActive() {
       return initDone && isInForeground();
    }
 
