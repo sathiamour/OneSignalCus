@@ -1,7 +1,9 @@
 <p align="center">
-  # OneSignalCus
+  <h1><B> OneSignalCus </B></h1>
 </p>
+
 ### OneSignal Android Push Notification Plugin - Customized version
+
 ---
 
 This plugin is only for native android and except notification all the other services are removed from the library.
